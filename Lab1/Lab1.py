@@ -3,101 +3,172 @@ import json
 import struct
 import pickle
 import base64
+import zlib
+import threading
+import time
 
-# Physical Layer: Handles bit-level transmission
+XOR_KEY = 42
+
+def xor_encrypt_decrypt(data):
+    """Encrypts or decrypts data using XOR operation with proper encoding."""
+    return ''.join(chr(ord(c) ^ XOR_KEY) for c in data)
+
+# Physical Layer: Handles communication
 class PhysicalLayer:
-    def transmit(self, data):
-        return ''.join(format(ord(i), '08b') for i in data)  # Convert to binary
-    
-    def receive(self, data):
-        return ''.join(chr(int(data[i:i+8], 2)) for i in range(0, len(data), 8))  # Convert back to text
+    def __init__(self, host='localhost', port=9999):
+        self.host = host
+        self.port = port
+        self.received_data = None
+        self.data_received_event = threading.Event()
 
-# Data Link Layer: Adds/removes MAC address and frames
+    def start_server(self):
+        """Starts a persistent socket server."""
+        def server():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((self.host, self.port))
+                s.listen()
+                while True:
+                    conn, _ = s.accept()
+                    with conn:
+                        self.received_data = conn.recv(4096).decode('utf-8')
+                        self.data_received_event.set()
+        
+        threading.Thread(target=server, daemon=True).start()
+    
+    def send(self, data):
+        """Sends data over a socket connection."""
+        print(f"\n[Physical Layer] Sending raw data: {data}\n")
+        time.sleep(1)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((self.host, self.port))
+            s.sendall(data.encode('utf-8'))
+    
+    def receive(self):
+        """Waits until data is received."""
+        self.data_received_event.wait()
+        print(f"\n[Physical Layer] Received raw data: {self.received_data}\n")
+        return self.received_data
+
+# Data Link Layer: MAC Addressing
 class DataLinkLayer:
     def __init__(self):
         self.mac_address = "AA:BB:CC:DD:EE:FF"
     
-    def add_frame(self, data):
-        return json.dumps({"mac": self.mac_address, "data": data})  # Add MAC address
+    def encapsulate(self, data):
+        frame = json.dumps({"mac": self.mac_address, "data": data})
+        print(f"[Data Link Layer] Encapsulated Frame: {frame}")
+        return frame
     
-    def remove_frame(self, frame):
-        frame_data = json.loads(frame)
-        return frame_data["data"]  # Extract data
+    def decapsulate(self, frame):
+        extracted_data = json.loads(frame)["data"]
+        print(f"[Data Link Layer] Decapsulated Data: {extracted_data}")
+        return extracted_data
 
-# Network Layer: Adds/removes IP address and handles routing
+# Network Layer: IP Routing
 class NetworkLayer:
     def __init__(self):
         self.ip_address = "192.168.1.1"
     
-    def add_packet(self, data):
-        return json.dumps({"ip": self.ip_address, "data": data})  # Add IP address
+    def route(self, data):
+        packet = json.dumps({"ip": self.ip_address, "data": data})
+        print(f"[Network Layer] Routed Packet: {packet}")
+        return packet
     
-    def remove_packet(self, packet):
-        packet_data = json.loads(packet)
-        return packet_data["data"]  # Extract data
+    def receive(self, packet):
+        extracted_data = json.loads(packet)["data"]
+        print(f"[Network Layer] Received Packet Data: {extracted_data}")
+        return extracted_data
 
-# Transport Layer: Implements TCP-like sequencing
+# Transport Layer: Integrity Check
 class TransportLayer:
-    def add_tcp_header(self, data):
-        return json.dumps({"seq": 1, "data": data})  # Add sequence number
+    def segment(self, data):
+        checksum = sum(bytearray(data, 'utf-8')) % 256
+        segment = json.dumps({"seq": 1, "checksum": checksum, "data": data})
+        print(f"[Transport Layer] Created Segment: {segment}")
+        return segment
     
-    def remove_tcp_header(self, segment):
+    def reassemble(self, segment):
         segment_data = json.loads(segment)
-        return segment_data["data"]  # Extract data
+        checksum = sum(bytearray(segment_data["data"], 'utf-8')) % 256
+        if checksum != segment_data["checksum"]:
+            print("[Transport Layer] ERROR: Checksum mismatch!")
+            return None
+        print(f"[Transport Layer] Reassembled Data: {segment_data['data']}")
+        return segment_data["data"]
 
-# Session Layer: Manages connection states
+# Session Layer: Session Control
 class SessionLayer:
     def establish_session(self, data):
-        return json.dumps({"session": "active", "data": data})  # Add session info
+        session = json.dumps({"session": "active", "data": data})
+        print(f"[Session Layer] Established Session: {session}")
+        return session
     
     def terminate_session(self, session_data):
-        session_info = json.loads(session_data)
-        return session_info["data"]  # Extract data
+        extracted_data = json.loads(session_data)["data"]
+        print(f"[Session Layer] Terminated Session, Extracted Data: {extracted_data}")
+        return extracted_data
 
-# Presentation Layer: Handles encoding and decoding
+# Presentation Layer: Compression & Encryption
 class PresentationLayer:
     def encode(self, data):
-        return base64.b64encode(pickle.dumps(data)).decode('utf-8')  # Convert to base64 string
+        compressed = zlib.compress(data.encode('utf-8'))
+        encrypted = xor_encrypt_decrypt(base64.b64encode(compressed).decode('utf-8'))
+        encoded = base64.b64encode(encrypted.encode('utf-8')).decode('utf-8')
+        print(f"[Presentation Layer] Encoded Data: {encoded}")
+        return encoded
     
     def decode(self, data):
-        return pickle.loads(base64.b64decode(data))  # Decode from base64
+        decrypted = xor_encrypt_decrypt(base64.b64decode(data).decode('utf-8'))
+        decompressed = zlib.decompress(base64.b64decode(decrypted))
+        decoded = decompressed.decode('utf-8')
+        print(f"[Presentation Layer] Decoded Data: {decoded}")
+        return decoded
 
-# Application Layer: Handles user interaction (simulating HTTP request/response)
+# Application Layer: HTTP-like Messages
 class ApplicationLayer:
-    def send_data(self, message):
-        return f"HTTP REQUEST: {message}"
+    def request(self, message):
+        request_data = f"HTTP REQUEST: {message}"
+        print(f"[Application Layer] Created Request: {request_data}")
+        return request_data
     
-    def receive_data(self, response):
-        return response.replace("HTTP RESPONSE: ", "")
+    def respond(self, request):
+        response_data = f"HTTP RESPONSE: {request}"
+        print(f"[Application Layer] Generated Response: {response_data}")
+        return response_data
 
-# Simulation of data transmission
-app_layer = ApplicationLayer()
-presentation_layer = PresentationLayer()
-session_layer = SessionLayer()
-transport_layer = TransportLayer()
-network_layer = NetworkLayer()
-data_link_layer = DataLinkLayer()
-physical_layer = PhysicalLayer()
+def simulate_osi_model():
+    """Simulates the full OSI model with data transmission."""
+    message = input("Enter your message: ")
+    
+    app_layer = ApplicationLayer()
+    pres_layer = PresentationLayer()
+    sess_layer = SessionLayer()
+    trans_layer = TransportLayer()
+    net_layer = NetworkLayer()
+    data_link_layer = DataLinkLayer()
+    phys_layer = PhysicalLayer()
+    
+    phys_layer.start_server()
+    
+    print("\n======= SENDING DATA =======")
+    app_data = app_layer.request(message)
+    encoded_data = pres_layer.encode(app_data)
+    session_data = sess_layer.establish_session(encoded_data)
+    segment_data = trans_layer.segment(session_data)
+    packet_data = net_layer.route(segment_data)
+    frame_data = data_link_layer.encapsulate(packet_data)
+    phys_layer.send(frame_data)
+    
+    print("\n======= RECEIVING DATA =======")
+    received_frame = phys_layer.receive()
+    received_packet = data_link_layer.decapsulate(received_frame)
+    received_segment = net_layer.receive(received_packet)
+    received_session = trans_layer.reassemble(received_segment)
+    
+    if received_session:
+        received_encoded = sess_layer.terminate_session(received_session)
+        received_app_data = pres_layer.decode(received_encoded)
+        response = app_layer.respond(received_app_data)
+        print(f"\n======= FINAL RESPONSE =======\n{response}")
 
-# Sending Data
-message = "Hello, Network!"
-app_data = app_layer.send_data(message)  # Application layer processing
-presentation_data = presentation_layer.encode(app_data)  # Encode data
-session_data = session_layer.establish_session(presentation_data)  # Establish session
-transport_data = transport_layer.add_tcp_header(session_data)  # Add TCP header
-network_data = network_layer.add_packet(transport_data)  # Add IP packet
-data_link_data = data_link_layer.add_frame(network_data)  # Add MAC frame
-physical_data = physical_layer.transmit(data_link_data)  # Convert to binary
-
-print("Data Transmitted over Network:", physical_data)
-
-# Receiving Data
-received_data = physical_layer.receive(physical_data)  # Convert back from binary
-data_link_received = data_link_layer.remove_frame(received_data)  # Remove MAC frame
-network_received = network_layer.remove_packet(data_link_received)  # Remove IP packet
-transport_received = transport_layer.remove_tcp_header(network_received)  # Remove TCP header
-session_received = session_layer.terminate_session(transport_received)  # Close session
-presentation_received = presentation_layer.decode(session_received)  # Decode data
-app_received = app_layer.receive_data(presentation_received)  # Extract message
-
-print("Received Message:", app_received)
+simulate_osi_model()
